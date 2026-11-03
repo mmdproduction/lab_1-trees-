@@ -69,6 +69,22 @@ private:
     std::size_t count = 0;
     Compare comp;
 
+    static std::unique_ptr<Node> clone(
+        const std::unique_ptr<Node>& node
+    ) {
+        if (!node) {
+            return nullptr;
+        }
+
+        auto copy = std::make_unique<Node>(node->value);
+
+        copy->left = clone(node->left);
+        copy->right = clone(node->right);
+        copy->height = node->height;
+
+        return copy;
+    }
+
     static int getHeight(const Node* node) {
         return node ? node->height : 0;
     }
@@ -281,6 +297,14 @@ private:
     }
     
 public:
+
+    AVLTree() = default;
+
+    AVLTree(const AVLTree& other)
+        : root(clone(other.root)),
+        count(other.count),
+        comp(other.comp) {}
+
     bool insert(const T& value) {
         return insertNode(root, value);
     }
