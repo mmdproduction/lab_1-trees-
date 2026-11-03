@@ -65,9 +65,9 @@ public:
 
 
 private:
-    std::unique_ptr<Node> root;
-    std::size_t count = 0;
-    Compare comp;
+    std::unique_ptr<Node> root_;
+    std::size_t count_ = 0;
+    Compare comp_;
 
     static std::unique_ptr<Node> clone(
         const std::unique_ptr<Node>& node
@@ -156,15 +156,15 @@ private:
     bool insertNode(std::unique_ptr<Node>& node, const T& value) {
         if (!node) {
             node = std::make_unique<Node>(value);
-            ++count;
+            ++count_;
             return true;
         }
 
         bool inserted;
 
-        if (comp(value, node->value)) {
+        if (comp_(value, node->value)) {
             inserted = insertNode(node->left, value);
-        } else if (comp(node->value, value)) {
+        } else if (comp_(node->value, value)) {
             inserted = insertNode(node->right, value);
         } else {
             return false;
@@ -199,9 +199,9 @@ private:
 
         bool erased;
 
-        if (comp(value, node->value)) {
+        if (comp_(value, node->value)) {
             erased = eraseNode(node->left, value);
-        } else if (comp(node->value, value)) {
+        } else if (comp_(node->value, value)) {
             erased = eraseNode(node->right, value);
         } else {
             auto removed = std::move(node);
@@ -219,7 +219,7 @@ private:
                 node = std::move(replacement);
             }
 
-            --count;
+            --count_;
             erased = true;
         }
 
@@ -301,34 +301,76 @@ public:
     AVLTree() = default;
 
     AVLTree(const AVLTree& other)
-        : root(clone(other.root)),
-        count(other.count),
-        comp(other.comp) {}
+        : root_(clone(other.root_)),
+        count_(other.count_),
+        comp_(other.comp_) {}
 
+    void swap(AVLTree& other) noexcept {
+        static_assert(
+            std::is_nothrow_swappable_v<Compare>,
+            "Compare must support noexcept swap"
+        );
+
+        using std::swap;
+
+        swap(comp_, other.comp_);
+        root_.swap(other.root_);
+        swap(count_, other.count_);
+    }
+
+    AVLTree& operator=(const AVLTree& other) {
+        if (this != &other) {
+            AVLTree copy(other);
+            swap(copy);
+        }
+
+        return *this;
+    }
+
+    AVLTree(AVLTree&& other)
+        : comp_(other.comp_) {
+        root_ = std::move(other.root_);
+        count_ = std::exchange(other.count_, 0);
+    }
+
+    AVLTree& operator=(AVLTree&& other) {
+        if (this != &other) {
+            AVLTree moved(std::move(other));
+            swap(moved);
+        }
+
+        return *this;
+    }
+
+    void clear() noexcept {
+        root_.reset();
+        count_ = 0;
+    }
+    
     bool insert(const T& value) {
-        return insertNode(root, value);
+        return insertNode(root_, value);
     }
 
     bool erase(const T& value){
-        return eraseNode(root, value);
+        return eraseNode(root_, value);
     }
 
     std::size_t size() const noexcept {
-        return count;
+        return count_;
     }
 
     bool empty() const noexcept {
-        return count == 0;
+        return count_ == 0;
     }
 
     bool contains(const T& value) const
     {
-        const Node* x = root.get();
+        const Node* x = root_.get();
         while(x)
         {
-            if(comp(value, x->value)){
+            if(comp_(value, x->value)){
                 x = x->left.get();
-            } else if(comp(x->value, value)){
+            } else if(comp_(x->value, value)){
                 x = x->right.get();
             } else{
                 return true;
@@ -340,7 +382,44 @@ public:
     template<class Func>
     void traverse(const OrderPolicy& policy, Func&& action) const {
         validateOrder(policy);
-        traverseNode(root, policy, action);
+        traverseNode(root_, policy, action);
+    }
+
+    template<class Func>
+    AVLTree map(Func action) const {
+        AVLTree result;
+        result.comp_ = comp_;
+
+        traverse(lkp(), [&](const T& value) {
+            result.insert(action(value));
+        });
+
+        return result;
+    }
+
+    template<class Predicate>
+    AVLTree where(Predicate predicate) const {
+        AVLTree result;
+        result.comp_ = comp_;
+
+        traverse(lkp(), [&](const T& value) {
+            if (predicate(value)) {
+                result.insert(value);
+            }
+        });
+
+        return result;
+    }
+
+    template<class Result, class Func>
+    Result reduce(Func action, Result initial) const {
+        traverse(lkp(), [&](const T& value) {
+            initial = action(initial, value);
+        });
+
+        return initial;
     }
 };
+
+
 
