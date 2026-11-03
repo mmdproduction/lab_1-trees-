@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <stdexcept>
 #include <utility>
 
 template< typename T, class Compare = std::less<T>>
@@ -17,7 +18,53 @@ class AVLTree{
         explicit Node(const T& val): value(val){}
     };
 
-    private:
+public:
+    enum class PartKind {
+        Root,
+        Child
+    };
+
+    struct Part {
+        PartKind kind;
+        std::size_t child_index;
+
+        static Part root() {
+            return {PartKind::Root, 0};
+        }
+
+        static Part child(std::size_t index) {
+            return {PartKind::Child, index};
+        }
+    };
+
+    using OrderPolicy = std::vector<Part>;
+
+    static OrderPolicy klp() {
+        return {Part::root(), Part::child(0), Part::child(1)};
+    }
+
+    static OrderPolicy kpl() {
+        return {Part::root(), Part::child(1), Part::child(0)};
+    }
+
+    static OrderPolicy lkp() {
+        return {Part::child(0), Part::root(), Part::child(1)};
+    }
+
+    static OrderPolicy lpk() {
+        return {Part::child(0), Part::child(1), Part::root()};
+    }
+
+    static OrderPolicy pkl() {
+        return {Part::child(1), Part::root(), Part::child(0)};
+    }
+
+    static OrderPolicy plk() {
+        return {Part::child(1), Part::child(0), Part::root()};
+    }
+
+
+private:
     std::unique_ptr<Node> root;
     std::size_t count = 0;
     Compare comp;
@@ -166,6 +213,72 @@ class AVLTree{
 
         return erased;
     }
+
+    static void validateOrder(const OrderPolicy& policy) {
+        if (policy.size() != 3) {
+            throw std::invalid_argument(
+                "Traversal policy must contain 3 parts"
+            );
+        }
+
+        bool rootSeen = false;
+        bool childSeen[2] = {false, false};
+
+        for (const Part& part : policy) {
+            switch (part.kind) {
+            case PartKind::Root:
+                if (rootSeen) {
+                    throw std::invalid_argument("Repeated root");
+                }
+
+                rootSeen = true;
+                break;
+
+            case PartKind::Child:
+                if (part.child_index >= 2) {
+                    throw std::invalid_argument("Invalid child index");
+                }
+
+                if (childSeen[part.child_index]) {
+                    throw std::invalid_argument("Repeated child");
+                }
+
+                childSeen[part.child_index] = true;
+                break;
+
+            default:
+                throw std::invalid_argument("Invalid part kind");
+            }
+        }
+    }
+
+        template<class Func>
+    static void traverseNode(
+        const std::unique_ptr<Node>& node,
+        const OrderPolicy& policy,
+        Func& action
+    ) {
+        if (!node) {
+            return;
+        }
+
+        for (const Part& part : policy) {
+            switch (part.kind) {
+            case PartKind::Root:
+                action(std::as_const(node->value));
+                break;
+
+            case PartKind::Child: {
+                const auto& child = (part.child_index == 0)
+                    ? node->left
+                    : node->right;
+
+                traverseNode(child, policy, action);
+                break;
+            }
+            }
+        }
+    }
     
 public:
     bool insert(const T& value) {
@@ -199,4 +312,11 @@ public:
         }
         return false;
     }
+
+    template<class Func>
+    void traverse(const OrderPolicy& policy, Func&& action) const {
+        validateOrder(policy);
+        traverseNode(root, policy, action);
+    }
 };
+
