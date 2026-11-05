@@ -2,7 +2,10 @@
 
 #include <cstddef>
 #include <functional>
+#include <iomanip>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -295,6 +298,204 @@ private:
             }
         }
     }
+
+    static std::size_t countNodes(
+        const std::unique_ptr<Node>& node
+    ) {
+        if (!node) {
+            return 0;
+        }
+
+        return 1 + countNodes(node->left)
+                + countNodes(node->right);
+    }
+
+    bool sameSubtree(
+        const std::unique_ptr<Node>& first,
+        const std::unique_ptr<Node>& second
+    ) const {
+        if (!first || !second) {
+            return !first && !second;
+        }
+
+        if (comp_(first->value, second->value) ||
+            comp_(second->value, first->value)) {
+            return false;
+        }
+
+        return sameSubtree(first->left, second->left)
+            && sameSubtree(first->right, second->right);
+    }
+
+    static void serializeNode(
+        const std::unique_ptr<Node>& node,
+        std::ostream& output
+    ) {
+        if (!node) {
+            return;
+        }
+
+        std::ostringstream valueStream;
+
+        if constexpr (std::is_floating_point_v<T>) {
+            valueStream << std::setprecision(
+                std::numeric_limits<T>::max_digits10
+            );
+        }
+
+        valueStream << node->value;
+
+        if (!valueStream) {
+            throw std::runtime_error("Cannot serialize value");
+        }
+
+        output << '{';
+
+        for (char ch : valueStream.str()) {
+            if (ch == '}' || ch == '\\') {
+                output << '\\';
+            }
+
+            output << ch;
+        }
+
+        output << '}';
+
+        if (!node->left && !node->right) {
+            return;
+        }
+
+
+        output << '(';
+        serializeNode(node->left, output);
+        output << ')';
+
+        output << '[';
+        serializeNode(node->right, output);
+        output << ']';
+    }
+
+
+    static std::string readValueText(std::istream& input) {
+        std::string text;
+        char ch;
+
+        while (input.get(ch)) {
+            if (ch == '}') {
+                return text;
+            }
+
+            if (ch == '\\') {
+                if (!input.get(ch) || (ch != '}' && ch != '\\')) {
+                    throw std::invalid_argument("Invalid escape sequence");
+                }
+            }
+
+            text += ch;
+        }
+
+        throw std::invalid_argument("Unterminated value");
+    }
+
+    static void expectChar(std::istream& input, char expected) {
+        char actual;
+
+        if (!input.get(actual) || actual != expected) {
+            throw std::invalid_argument("Invalid tree format");
+        }
+    }
+
+    static T parseValue(const std::string& text) {
+        if constexpr (std::is_same_v<T, std::string>) {
+            return text;
+        } else {
+            T value{};
+            std::istringstream input(text);
+
+            if (!(input >> value)) {
+                throw std::invalid_argument("Invalid value");
+            }
+
+            input >> std::ws;
+
+            if (!input.eof()) {
+                throw std::invalid_argument("Extra characters in value");
+            }
+
+            return value;
+        }
+    }
+
+    static std::unique_ptr<Node> deserializeNode(
+        std::istream& input,
+        std::size_t depth = 0
+    ) {
+
+        if (depth > 128) {
+            throw std::invalid_argument("Tree is too deep");
+        }
+
+        expectChar(input, '{');
+
+        const std::string text = readValueText(input);
+        auto node = std::make_unique<Node>(parseValue(text));
+
+        if (input.peek() != '(') {
+            return node;
+        }
+
+        expectChar(input, '(');
+
+        if (input.peek() != ')') {
+            node->left = deserializeNode(input, depth + 1);
+        }
+
+        expectChar(input, ')');
+        expectChar(input, '[');
+
+        if (input.peek() != ']') {
+            node->right = deserializeNode(input, depth + 1);
+        }
+
+        expectChar(input, ']');
+
+        updateHeight(node.get());
+
+        const int balance = getBalance(node.get());
+
+        if (balance < -1 || balance > 1) {
+            throw std::invalid_argument("Tree is not AVL balanced");
+        }
+
+        return node;
+    }
+
+    std::size_t validateTree(
+        const std::unique_ptr<Node>& node,
+        const std::optional<std::reference_wrapper<const T>>& lower,
+        const std::optional<std::reference_wrapper<const T>>& upper
+    ) const {
+        if (!node) {
+            return 0;
+        }
+
+        if (lower && !comp_(lower->get(), node->value)) {
+            throw std::invalid_argument("Invalid BST order");
+        }
+
+        if (upper && !comp_(node->value, upper->get())) {
+            throw std::invalid_argument("Invalid BST order");
+        }
+
+        const auto bound =
+            std::optional<std::reference_wrapper<const T>>{
+                std::cref(node->value)
+            };
+
+        return 1
+            + validateTree(node->left, lower, bound)
+            + validateTree(node->right, bound, upper);
+    }
     
 public:
 
@@ -418,6 +619,82 @@ public:
         });
 
         return initial;
+    }
+
+    AVLTree getSubtree(const T& value) const {
+        auto current = std::cref(root_);
+
+        while (current.get()) {
+            const auto& node = current.get();
+
+            if (comp_(value, node->value)) {
+                current = std::cref(node->left);
+            } else if (comp_(node->value, value)) {
+                current = std::cref(node->right);
+            } else {
+                AVLTree result;
+                result.comp_ = comp_;
+                result.root_ = clone(node);
+                result.count_ = countNodes(result.root_);
+
+                return result;
+            }
+        }
+
+        throw std::out_of_range("Subtree root not found");
+    }
+
+    bool containsSubtree(const AVLTree& subtree) const {
+        if (!subtree.root_) {
+            return true;
+        }
+
+        auto current = std::cref(root_);
+        const T& value = subtree.root_->value;
+
+        while (current.get()) {
+            const auto& node = current.get();
+
+            if (comp_(value, node->value)) {
+                current = std::cref(node->left);
+            } else if (comp_(node->value, value)) {
+                current = std::cref(node->right);
+            } else {
+                return sameSubtree(node, subtree.root_);
+            }
+        }
+
+        return false;
+    }
+
+    std::string serialize() const {
+        std::ostringstream output;
+        serializeNode(root_, output);
+        return output.str();
+    }
+
+    void deserialize(const std::string& text) {
+        std::unique_ptr<Node> parsed;
+        std::size_t parsedCount = 0;
+
+        if (!text.empty()) {
+            std::istringstream input(text);
+
+            parsed = deserializeNode(input);
+
+            if (input.peek() != std::char_traits<char>::eof()) {
+                throw std::invalid_argument("Extra data after tree");
+            }
+
+            parsedCount = validateTree(
+                parsed,
+                std::nullopt,
+                std::nullopt
+            );
+        }
+
+        root_ = std::move(parsed);
+        count_ = parsedCount;
     }
 };
 
