@@ -64,15 +64,9 @@
 - AVLTreeIterator (копия дерева в виде списка, текущий индекс)
 ### Б. Исключения
 *std::exception*
-▽
 *Exception*
-▽
-	*InvalidArgumentException*
-	*NullPointerException*
-	*IndexOutOfRangeException*
+
 ### В. Базовые контейнеры
 *Sequence*
-▽
 *ArraySequence*
-▽
-*MutableArraySequence*
+
