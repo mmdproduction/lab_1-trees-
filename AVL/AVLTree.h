@@ -1,16 +1,21 @@
 #pragma once
 
+#include "ICollection.hpp"
 #include <cstddef>
 #include <functional>
 #include <iomanip>
 #include <limits>
 #include <memory>
+#include <vector>
+#include <string>
+#include <sstream>
+#include <type_traits>
 #include <optional>
 #include <stdexcept>
 #include <utility>
 
 template< typename T, class Compare = std::less<T>>
-class AVLTree{
+class AVLTree : public ICollection<T>{
 
     struct Node{
         T value;
@@ -72,6 +77,18 @@ private:
     std::size_t count_ = 0;
     Compare comp_;
 
+    struct EnumerationState {};
+    mutable std::shared_ptr<EnumerationState> enumerationState_;
+    std::shared_ptr<const int> lifetime_ = std::make_shared<const int>(0);
+
+    void invalidateEnumerators() noexcept { enumerationState_.reset(); }
+
+    std::shared_ptr<EnumerationState> enumerationState() const {
+        if (!enumerationState_)
+            enumerationState_ = std::make_shared<EnumerationState>();
+        return enumerationState_;
+    }
+
     static std::unique_ptr<Node> clone(
         const std::unique_ptr<Node>& node
     ) {
@@ -88,57 +105,57 @@ private:
         return copy;
     }
 
-    static int getHeight(const Node* node) {
+    static int getHeight(const std::unique_ptr<Node>& node) noexcept {
         return node ? node->height : 0;
     }
 
-    static void updateHeight(Node* node) {
-        const int leftHeight = getHeight(node->left.get());
-        const int rightHeight = getHeight(node->right.get());
+    static void updateHeight(Node& node) noexcept {
+        const int leftHeight = getHeight(node.left);
+        const int rightHeight = getHeight(node.right);
 
-        node->height =
+        node.height =
             1 + (leftHeight > rightHeight ? leftHeight : rightHeight);
     }
 
-    static int getBalance(const Node* node) {
-        return getHeight(node->left.get())
-            - getHeight(node->right.get());
+    static int getBalance(const Node& node) noexcept {
+        return getHeight(node.left)
+            - getHeight(node.right);
     }
 
-    static std::unique_ptr<Node> rotateLeft(std::unique_ptr<Node> y){
+    static std::unique_ptr<Node> rotateLeft(std::unique_ptr<Node> y) noexcept {
         auto x = std::move(y->right);
 
         y->right = std::move(x->left);
         x->left = std::move(y);
 
-        updateHeight(x->left.get());
-        updateHeight(x.get());
+        updateHeight(*x->left);
+        updateHeight(*x);
 
         return x;
     }
 
-    static std::unique_ptr<Node> rotateRight(std::unique_ptr<Node> y){
+    static std::unique_ptr<Node> rotateRight(std::unique_ptr<Node> y) noexcept {
          auto x = std::move(y->left);
 
         y->left = std::move(x->right);
         x->right = std::move(y);
 
-        updateHeight(x->right.get());
-        updateHeight(x.get());
+        updateHeight(*x->right);
+        updateHeight(*x);
 
         return x;
     }
 
-    static std::unique_ptr<Node> rebalance(std::unique_ptr<Node> node) {
+    static std::unique_ptr<Node> rebalance(std::unique_ptr<Node> node) noexcept {
         if (!node) {
             return node;
         }
 
-        updateHeight(node.get());
-        const int balance = getBalance(node.get());
+        updateHeight(*node);
+        const int balance = getBalance(*node);
 
         if (balance > 1) {
-            if (getBalance(node->left.get()) < 0) {
+            if (getBalance(*node->left) < 0) {
                 node->left = rotateLeft(std::move(node->left));
             }
 
@@ -146,7 +163,7 @@ private:
         }
 
         if (balance < -1) {
-            if (getBalance(node->right.get()) > 0) {
+            if (getBalance(*node->right) > 0) {
                 node->right = rotateRight(std::move(node->right));
             }
 
@@ -267,34 +284,6 @@ private:
 
             default:
                 throw std::invalid_argument("Invalid part kind");
-            }
-        }
-    }
-
-        template<class Func>
-    static void traverseNode(
-        const std::unique_ptr<Node>& node,
-        const OrderPolicy& policy,
-        Func& action
-    ) {
-        if (!node) {
-            return;
-        }
-
-        for (const Part& part : policy) {
-            switch (part.kind) {
-            case PartKind::Root:
-                action(std::as_const(node->value));
-                break;
-
-            case PartKind::Child: {
-                const auto& child = (part.child_index == 0)
-                    ? node->left
-                    : node->right;
-
-                traverseNode(child, policy, action);
-                break;
-            }
             }
         }
     }
@@ -459,9 +448,9 @@ private:
 
         expectChar(input, ']');
 
-        updateHeight(node.get());
+        updateHeight(*node);
 
-        const int balance = getBalance(node.get());
+        const int balance = getBalance(*node);
 
         if (balance < -1 || balance > 1) {
             throw std::invalid_argument("Tree is not AVL balanced");
@@ -499,7 +488,113 @@ private:
     
 public:
 
+    class TreeEnumerator : public IEnumerator<T> {
+    private:
+        struct Frame {
+            std::reference_wrapper<const Node> node;
+            std::size_t nextPart = 0;
+        };
+
+        std::reference_wrapper<const AVLTree> tree_;
+        std::shared_ptr<EnumerationState> state_;
+
+        void checkValid() const {
+            if (!state_)
+                throw std::logic_error("Invalid enumeration token");
+            if (lifetime_.expired())
+                throw std::logic_error("Tree was destroyed");
+            if (tree_.get().enumerationState_ != state_)
+                throw std::logic_error("Tree changed during enumeration");
+        }
+        std::weak_ptr<const int> lifetime_;
+        OrderPolicy policy_;
+        std::vector<Frame> stack_;
+
+        std::optional<std::reference_wrapper<const T>> current_;
+
+    public:
+        TreeEnumerator(
+            const AVLTree& tree,
+            const OrderPolicy& policy
+        ) : tree_(std::cref(tree)),
+            state_(tree.enumerationState()),
+            lifetime_(tree.lifetime_),
+            policy_(policy) {
+            AVLTree::validateOrder(policy_);
+            reset();
+        }
+
+        bool moveNext() override {
+            checkValid();
+            current_.reset();
+
+            while (!stack_.empty()) {
+                Frame& frame = stack_.back();
+
+                if (frame.nextPart == policy_.size()) {
+                    stack_.pop_back();
+                    continue;
+                }
+
+                const Node& node = frame.node.get();
+                const Part part = policy_[frame.nextPart];
+
+                ++frame.nextPart;
+
+                if (part.kind == PartKind::Root) {
+                    current_ = std::cref(node.value);
+                    return true;
+                }
+
+                const auto& child = part.child_index == 0
+                    ? node.left
+                    : node.right;
+
+                if (child) {
+                    stack_.push_back({std::cref(*child), 0});
+                }
+            }
+
+            return false;
+        }
+
+        const T& current() const override {
+            checkValid();
+            if (!current_) {
+                throw std::out_of_range(
+                    "Enumerator has no current element"
+                );
+            }
+
+            return current_->get();
+        }
+
+        void reset() override {
+            checkValid();
+            current_.reset();
+            stack_.clear();
+
+            const auto& root = tree_.get().root_;
+
+            if (root) {
+                stack_.push_back({std::cref(*root), 0});
+            }
+        }
+    };
+
+    std::unique_ptr<IEnumerator<T>>
+    getEnumerator() const override {
+        return getEnumerator(lkp());
+    }
+
+    std::unique_ptr<IEnumerator<T>>
+    getEnumerator(const OrderPolicy& policy) const {
+        return std::make_unique<TreeEnumerator>(*this, policy);
+    }
+
     AVLTree() = default;
+
+    explicit AVLTree(const Compare& comp) : comp_(comp) {}
 
     AVLTree(const AVLTree& other)
         : root_(clone(other.root_)),
@@ -512,6 +607,9 @@ public:
             "Compare must support noexcept swap"
         );
 
+        if (this == &other) return;
+        invalidateEnumerators();
+        other.invalidateEnumerators();
         using std::swap;
 
         swap(comp_, other.comp_);
@@ -530,6 +628,7 @@ public:
 
     AVLTree(AVLTree&& other)
         : comp_(other.comp_) {
+        other.invalidateEnumerators();
         root_ = std::move(other.root_);
         count_ = std::exchange(other.count_, 0);
     }
@@ -543,37 +642,42 @@ public:
         return *this;
     }
 
-    void clear() noexcept {
+    void clear() noexcept override{
+        invalidateEnumerators();
         root_.reset();
         count_ = 0;
     }
     
-    bool insert(const T& value) {
-        return insertNode(root_, value);
+    bool insert(const T& value) override{
+        const bool inserted = insertNode(root_, value);
+        if (inserted) invalidateEnumerators();
+        return inserted;
     }
 
-    bool erase(const T& value){
-        return eraseNode(root_, value);
+    bool erase(const T& value) override{
+        const bool erased = eraseNode(root_, value);
+        if (erased) invalidateEnumerators();
+        return erased;
     }
 
-    std::size_t size() const noexcept {
+    std::size_t size() const noexcept  override{
         return count_;
     }
 
-    bool empty() const noexcept {
+    bool empty() const noexcept  override{
         return count_ == 0;
     }
 
-    bool contains(const T& value) const
+    bool contains(const T& value) const override
     {
-        const Node* x = root_.get();
-        while(x)
-        {
-            if(comp_(value, x->value)){
-                x = x->left.get();
-            } else if(comp_(x->value, value)){
-                x = x->right.get();
-            } else{
+        auto current = std::cref(root_);
+        while (current.get()) {
+            const auto& node = current.get();
+            if (comp_(value, node->value)) {
+                current = std::cref(node->left);
+            } else if (comp_(node->value, value)) {
+                current = std::cref(node->right);
+            } else {
                 return true;
             }
         }
@@ -582,14 +686,15 @@ public:
 
     template<class Func>
     void traverse(const OrderPolicy& policy, Func&& action) const {
-        validateOrder(policy);
-        traverseNode(root_, policy, action);
+        auto enumerator = getEnumerator(policy);
+        while (enumerator->moveNext()) {
+            action(enumerator->current());
+        }
     }
 
     template<class Func>
     AVLTree map(Func action) const {
-        AVLTree result;
-        result.comp_ = comp_;
+        AVLTree result(comp_);
 
         traverse(lkp(), [&](const T& value) {
             result.insert(action(value));
@@ -600,8 +705,7 @@ public:
 
     template<class Predicate>
     AVLTree where(Predicate predicate) const {
-        AVLTree result;
-        result.comp_ = comp_;
+        AVLTree result(comp_);
 
         traverse(lkp(), [&](const T& value) {
             if (predicate(value)) {
@@ -632,8 +736,7 @@ public:
             } else if (comp_(node->value, value)) {
                 current = std::cref(node->right);
             } else {
-                AVLTree result;
-                result.comp_ = comp_;
+                AVLTree result(comp_);
                 result.root_ = clone(node);
                 result.count_ = countNodes(result.root_);
 
@@ -693,6 +796,7 @@ public:
             );
         }
 
+        invalidateEnumerators();
         root_ = std::move(parsed);
         count_ = parsedCount;
     }

@@ -13,6 +13,11 @@ target_include_directories(avl_tree INTERFACE
 
 add_subdirectory(extern/googletest)
 
+add_executable(avl_console console.cpp)
+target_link_libraries(avl_console PRIVATE avl_tree)
+add_executable(avl_bench benchmarks/benchmarks.cpp)
+target_link_libraries(avl_bench PRIVATE avl_tree)
+
 enable_testing()
 
 add_executable(avl_tree_tests
