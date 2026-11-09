@@ -800,6 +800,38 @@ public:
         root_ = std::move(parsed);
         count_ = parsedCount;
     }
+
+    T* find(const T& value) {
+        Node* current = root_.get();
+
+        while (current) {
+            if (comp_(value, current->value)) {
+                current = current->left.get();
+            } else if (comp_(current->value, value)) {
+                current = current->right.get();
+            } else {
+                return &current->value;
+            }
+        }
+
+        return nullptr;
+    }
+
+    const T* find(const T& value) const {
+        const Node* current = root_.get();
+
+        while (current) {
+            if (comp_(value, current->value)) {
+                current = current->left.get();
+            } else if (comp_(current->value, value)) {
+                current = current->right.get();
+            } else {
+                return &current->value;
+            }
+        }
+
+        return nullptr;
+    }
 };
 
 
